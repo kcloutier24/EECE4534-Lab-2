@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Parse pulsecap edges."""
+
+import struct
+import matplotlib.pyplot as plt
+import numpy
+from argparse import ArgumentParser
+import numpy as np
+
+EDGE_DATA_FMT = "I"
+EDGE_DATA_SIZE = struct.calcsize(EDGE_DATA_FMT)
+TIMER_MAX_VALUE = 2 ** 32 - 1
+AXI_CLOCK_HZ = 100e6
+TIMER_INTERVAL = 1.0 / AXI_CLOCK_HZ
+
+
+if __name__ == "__main__":
+
+    # parse arguments
+    parser = ArgumentParser()
+    parser.add_argument(
+        "edge1", help="File containing edge data from pulsecap module"
+    )
+    parser.add_argument(
+        "edge2", help="File containing edge data from pulsecap module"
+    )
+    parser.add_argument(
+        "edge3", help="File containing edge data from pulsecap module"
+    )
+    
+    parser.add_argument(
+        "--saveplot",
+        help="save plot to file, but do not show window",
+    )
+
+    parser.add_argument(
+        "--dutycycle",
+        help="Make PDF/CDF of duty cycle, not the period (assuming 0.5ms ON time)"
+    )
+
+    args = parser.parse_args()
+
+    names = ["busyWait", "Software", "Hardware"]
+
+    # open file
+    edge_data_arr = []
+    with open(args.edge1, "rb") as f:
+        edge_data_arr.append(f.read())
+
+    with open(args.edge2, "rb") as f:
+        edge_data_arr.append(f.read())
+
+    with open(args.edge3, "rb") as f:
+        edge_data_arr.append(f.read())
+
+    if len(edge_data_arr) != 3:
+        print("FATAL: could not read edge data")
+        exit(1)
+
+    fig2, ax2 = plt.subplots()
+
+    for q, edge_data in enumerate(edge_data_arr):
+        edges = []
+        while len(edge_data):
+            edges.append(struct.unpack_from(EDGE_DATA_FMT, edge_data, 0)[0])
+            edge_data = edge_data[EDGE_DATA_SIZE:]
+
+        print(f"Creating PDF and CDF plots....")
+
+        # edges relative to each other
+        relative_edges = []
+        offset = 0
+        for idx, edge in enumerate(edges):
+            if idx > 0 and edge < edges[idx - 1]:
+                offset += TIMER_MAX_VALUE
+
+            relative_edges.append(edge - edges[0] + offset)
+
+        # create visualization
+        time_axis = []
+        value_axis = []
+        for idx, edge in enumerate(relative_edges):
+            if idx == 0:
+                value_axis.append("LOW")
+            else:
+                if value_axis[idx - 1] == "HIGH":
+                    value_axis.append("LOW")
+                else:
+                    value_axis.append("HIGH")
+
+            time_axis.append(TIMER_INTERVAL * edge)
+
+        # create data output
+        period_info = numpy.array([], dtype=float)
+        duty_info = numpy.array([], dtype=float)
+        for idx, time in enumerate(time_axis):
+            if idx in [0, 1]:
+                period_info = numpy.append(period_info, 0.0)
+                duty_info = numpy.append(duty_info, 0.0)
+            else:
+                # calculate period
+                period_info = numpy.append(period_info, time - time_axis[idx - 2])
+                duty_info = numpy.append(
+                    duty_info, time_axis[idx - 1] - time_axis[idx - 2]
+                )
+
+        # convert lists to arrays
+        np_va = numpy.array(value_axis)
+        np_ta = numpy.array(time_axis, dtype=float)
+
+        # transforme HIGH/LOW values to 1/0
+        np_va[np_va == "LOW"] = 0.0
+        np_va[np_va == "HIGH"] = 1.0
+
+        # stack arrays
+        combined_arrays = numpy.array(
+            list(zip(np_ta, np_va.astype(float), period_info, duty_info))
+        )
+
+        # plot
+        if(len(time_axis) %2 != 0):
+            print("You must have an even amount of edges in order to plot this")
+            exit()
+
+        time_axis = time_axis[1::2]
+        value_axis = value_axis[1::2]
+
+        time_deltas = []
+        for i in range(0, (len(time_axis) - 1)):
+            time_deltas.append(time_axis[i + 1] - time_axis[i] - 0.001)
+
+        mu = sum(time_deltas) / len(time_deltas) #mean
+        sigma = (sum([((x - mu) ** 2) for x in time_deltas]) / len(time_deltas)) ** 0.5 #Standard deviation
+        print("Average period: ", mu)
+
+        nptimedeltas = np.array(time_deltas)
+        print(i)
+        ax2.plot(np.sort(nptimedeltas), np.linspace(0, 1, len(nptimedeltas), endpoint=False), label=(names[q]))
+        
+    ax2.set_ylabel("Probability of occurrence")
+    ax2.set_title("Cumulative Distribution Function")
+    ax2.legend()
+    if(args.dutycycle is None):
+        ax2.set_xlabel("Period difference from 1ms [s]")
+    else:
+        ax2.set_xlabel("Duty Cylce difference from 0.5ms [s]")
+    ax2.grid(True)
+
+    if args.saveplot is not None:
+        fig2.savefig(args.saveplot + "_CDF.png")
+    else:
+        plt.show()

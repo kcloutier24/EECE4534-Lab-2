@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Parse pulsecap edges."""
+
+import struct
+import matplotlib.pyplot as plt
+import numpy
+from argparse import ArgumentParser
+
+EDGE_DATA_FMT = "I"
+EDGE_DATA_SIZE = struct.calcsize(EDGE_DATA_FMT)
+TIMER_MAX_VALUE = 2 ** 32 - 1
+AXI_CLOCK_HZ = 100e6
+TIMER_INTERVAL = 1.0 / AXI_CLOCK_HZ
+
+
+if __name__ == "__main__":
+
+    # parse arguments
+    parser = ArgumentParser()
+    parser.add_argument(
+        "edges", help="File containing edge data from pulsecap module"
+    )
+    parser.add_argument("--output", help="output data to this file")
+    parser.add_argument(
+        "--saveplot",
+        help="save plot to file, but do not show window",
+    )
+
+    args = parser.parse_args()
+
+    print(f"INFO: Timer interval is {TIMER_INTERVAL} s")
+
+    # open file
+    edge_data = None
+    with open(args.edges, "rb") as f:
+        edge_data = f.read()
+
+    if edge_data is None:
+        print("FATAL: could not read edge data")
+        exit(1)
+
+    edges = []
+    while len(edge_data):
+        edges.append(struct.unpack_from(EDGE_DATA_FMT, edge_data, 0)[0])
+        edge_data = edge_data[EDGE_DATA_SIZE:]
+
+    print(f"INFO: Found {len(edges)} edges")
+
+    # edges relative to each other
+    relative_edges = []
+    offset = 0
+    for idx, edge in enumerate(edges):
+        if idx > 0 and edge < edges[idx - 1]:
+            offset += TIMER_MAX_VALUE
+
+        relative_edges.append(edge - edges[0] + offset)
+
+    # create visualization
+    time_axis = []
+    value_axis = []
+    for idx, edge in enumerate(relative_edges):
+        if idx == 0:
+            value_axis.append("LOW")
+        else:
+            if value_axis[idx - 1] == "HIGH":
+                value_axis.append("LOW")
+            else:
+                value_axis.append("HIGH")
+
+        time_axis.append(TIMER_INTERVAL * edge)
+
+    # create data output
+    period_info = numpy.array([], dtype=float)
+    duty_info = numpy.array([], dtype=float)
+    for idx, time in enumerate(time_axis):
+        if idx in [0, 1]:
+            period_info = numpy.append(period_info, 0.0)
+            duty_info = numpy.append(duty_info, 0.0)
+        else:
+            # calculate period
+            period_info = numpy.append(period_info, time - time_axis[idx - 2])
+            duty_info = numpy.append(
+                duty_info, time_axis[idx - 1] - time_axis[idx - 2]
+            )
+
+    # convert lists to arrays
+    np_va = numpy.array(value_axis)
+    np_ta = numpy.array(time_axis, dtype=float)
+
+    # transforme HIGH/LOW values to 1/0
+    np_va[np_va == "LOW"] = 0.0
+    np_va[np_va == "HIGH"] = 1.0
+
+    # stack arrays
+    combined_arrays = numpy.array(
+        list(zip(np_ta, np_va.astype(float), period_info, duty_info))
+    )
+    if args.output is not None:
+        # save to file
+        numpy.savetxt(args.output, combined_arrays, delimiter=",")
+
+    # plot
+    fig, ax = plt.subplots()
+    ax.set_title(f'PWM signal reconstructed from "{args.edges}"')
+    ax.set_ylabel("Signal Level")
+    ax.set_xlabel("Time [s]")
+    ax.invert_yaxis()
+    ax.step(time_axis, value_axis)
+    if args.saveplot is not None:
+        fig.savefig(args.saveplot)
+    else:
+        plt.show()
